@@ -1,6 +1,6 @@
 ---
 name: openproject-pm-knowledge
-description: Manage OpenProject work packages and lightweight project knowledge artifacts (weekly summaries and decision logs). Use when work requires reading project/work package status, creating or updating work packages, adding comments, generating weekly markdown status updates, or logging project decisions.
+description: Manage OpenProject work packages, wiki pages, and lightweight project knowledge artifacts (weekly summaries and decision logs). Use when work requires reading project/work package status, creating or updating work packages, adding comments, reading or updating OpenProject wiki content, generating weekly markdown status updates, or logging project decisions.
 ---
 
 # OpenProject PM + Knowledge Skill
@@ -48,6 +48,7 @@ Use `python scripts/openproject_cli.py <command> [args]`.
   - Read wiki page metadata via API v3 and page text via legacy JSON endpoint when available.
 - `write-wiki-page --project <id|identifier> --title "..." (--content "..." | --content-file path.md) [--comment "..."]`
   - Create or update wiki page content via legacy JSON endpoint compatibility.
+  - If legacy endpoint auth fails in token mode, switch to `OPENPROJECT_AUTH_MODE=basic` and use `OPENPROJECT_USERNAME` / `OPENPROJECT_PASSWORD`.
 - `weekly-summary --project <id|identifier> [--output path.md]`
   - Build compact markdown grouped by completion/in-progress/blockers/next focus.
   - Writes output to provided path or default `project-knowledge/status/YYYY-MM-DD-weekly-status.md`.
@@ -89,6 +90,7 @@ Use `python scripts/openproject_cli.py <command> [args]`.
 - Use `list-wiki-pages` to discover wiki page titles within a project.
 - Use `read-wiki-page` for metadata-first reads (`--id`) and full text reads (`--project --title`).
 - Use `write-wiki-page` to create/update wiki pages with explicit text payload.
+- Prefer `--content-file` for larger wiki updates to keep command history clean and auditable.
 - Report capability limits clearly when OpenProject API v3 exposes wiki metadata only or when legacy endpoints are blocked by auth mode.
 
 ### Decision logging

@@ -17,6 +17,7 @@ The project is intentionally narrow and safety-first: OpenProject remains the so
 - Setup
 - Configuration
 - Authentication
+- Wiki Auth Mode
 - Command Reference
 - Typical Workflows
 - Knowledge Artifacts
@@ -168,6 +169,25 @@ python3 scripts/openproject_cli.py list-projects
 
 If auth fails, verify URL, token scope/validity, and server policy for API auth.
 
+## Wiki Auth Mode
+
+Wiki behavior can differ from work package behavior on some OpenProject instances:
+- Work package operations generally work with token mode.
+- Wiki text read/write may require legacy JSON endpoints.
+- Legacy wiki endpoints may reject token mode and require basic mode credentials.
+
+Recommended fallback for wiki operations:
+
+```env
+OPENPROJECT_AUTH_MODE=basic
+OPENPROJECT_USERNAME=<your_username>
+OPENPROJECT_PASSWORD=<your_password>
+```
+
+Security note:
+- Use a least-privilege account for wiki writes when using basic mode.
+- Never commit these credentials.
+
 ## Command Reference
 
 General form:
@@ -217,6 +237,10 @@ python3 scripts/openproject_cli.py write-wiki-page \
   --content-file ./templates/weekly-status-template.md \
   --comment "Update from CLI"
 
+# if wiki endpoints reject token auth:
+OPENPROJECT_AUTH_MODE=basic OPENPROJECT_USERNAME="<user>" OPENPROJECT_PASSWORD="<pass>" \
+python3 scripts/openproject_cli.py write-wiki-page --project know-malawi --title "Home" --content "Updated wiki text"
+
 python3 scripts/openproject_cli.py weekly-summary --project know-malawi
 python3 scripts/openproject_cli.py weekly-summary --project know-malawi --output ./project-knowledge/status/custom-weekly.md
 
@@ -248,6 +272,7 @@ python3 scripts/openproject_cli.py log-decision \
 1. Discover wiki pages with `list-wiki-pages`.
 2. Read canonical pages with `read-wiki-page`.
 3. Update project wiki docs with `write-wiki-page`.
+4. If token-mode auth fails for wiki endpoints, retry with basic mode credentials.
 
 ### Weekly reporting
 
@@ -334,9 +359,10 @@ Known variability points:
 - Comment creation endpoint behavior (`addComment`, patch comment, activities endpoint)
 - Workflow-restricted status transitions
 - Project-specific availability of types/statuses/custom fields
-- Wiki API support:
-- API v3 exposes `GET /api/v3/wiki_pages/{id}` metadata, but page text/write operations may require legacy endpoints.
-- Legacy wiki endpoints are instance-policy dependent and can require username/password auth mode.
+- Wiki API behavior differs between metadata and content operations.
+- API v3 exposes `GET /api/v3/wiki_pages/{id}` metadata.
+- Page text and wiki writes may require legacy endpoints.
+- Legacy endpoints are instance-policy dependent and can require basic mode auth.
 
 Treat this repository as conservative baseline logic; tune for your instance policies.
 
