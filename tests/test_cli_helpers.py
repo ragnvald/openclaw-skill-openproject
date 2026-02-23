@@ -54,6 +54,19 @@ class HelperTests(unittest.TestCase):
             self.assertNotEqual(base, next_path)
             self.assertEqual(next_path.name, "decision-2.md")
 
+    def test_to_api_path(self) -> None:
+        self.assertEqual(cli.to_api_path("/api/v3/work_packages/1"), "/work_packages/1")
+        self.assertEqual(cli.to_api_path("https://example.org/api/v3/projects/8"), "/projects/8")
+        self.assertEqual(cli.to_api_path("work_packages/1"), "/work_packages/1")
+
+    def test_wiki_helpers(self) -> None:
+        self.assertEqual(cli.encode_wiki_title("Project Home"), "Project%20Home")
+
+        wrapped = {"wiki_page": {"title": "Home", "text": "hello"}}
+        self.assertEqual(cli.extract_legacy_wiki_page(wrapped)["title"], "Home")
+        self.assertEqual(cli.extract_wiki_text({"text": {"raw": "abc"}}), "abc")
+        self.assertEqual(cli.extract_wiki_text({"text": "def"}), "def")
+
 
 if __name__ == "__main__":
     unittest.main()

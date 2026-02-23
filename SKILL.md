@@ -21,6 +21,8 @@ Purpose: use OpenProject as project source of truth and keep lightweight knowled
 - `OPENPROJECT_API_TOKEN` (required for default auth): API token used with username `apikey`.
 - `OPENPROJECT_DEFAULT_PROJECT` (optional): default project id/identifier used when `--project` is omitted.
 - `OPENPROJECT_DECISION_LOG_DIR` (optional): directory for decision markdown files. Default: `project-knowledge/decisions`.
+- `OPENPROJECT_AUTH_MODE` (optional): `token` (default) or `basic`.
+- `OPENPROJECT_USERNAME` and `OPENPROJECT_PASSWORD` (optional): used when `OPENPROJECT_AUTH_MODE=basic`; can be required for some legacy wiki endpoints.
 
 ## Supported Operations
 
@@ -40,6 +42,12 @@ Use `python scripts/openproject_cli.py <command> [args]`.
 - `add-comment --id <wp_id> --comment "..."`
   - Best-effort comment creation using OpenProject API v3.
   - Returns a clear message when endpoint behavior differs by version/config.
+- `list-wiki-pages --project <id|identifier>`
+  - List wiki pages for a project (legacy JSON endpoint compatibility).
+- `read-wiki-page [--id <wiki_id> | --project <id|identifier> --title "..."] [--output path.md]`
+  - Read wiki page metadata via API v3 and page text via legacy JSON endpoint when available.
+- `write-wiki-page --project <id|identifier> --title "..." (--content "..." | --content-file path.md) [--comment "..."]`
+  - Create or update wiki page content via legacy JSON endpoint compatibility.
 - `weekly-summary --project <id|identifier> [--output path.md]`
   - Build compact markdown grouped by completion/in-progress/blockers/next focus.
   - Writes output to provided path or default `project-knowledge/status/YYYY-MM-DD-weekly-status.md`.
@@ -75,6 +83,13 @@ Use `python scripts/openproject_cli.py <command> [args]`.
   - Blockers / risks
   - Next focus
 - Save summary in `project-knowledge/status/` with date-based filename unless output path is provided.
+
+### Wiki read/write
+
+- Use `list-wiki-pages` to discover wiki page titles within a project.
+- Use `read-wiki-page` for metadata-first reads (`--id`) and full text reads (`--project --title`).
+- Use `write-wiki-page` to create/update wiki pages with explicit text payload.
+- Report capability limits clearly when OpenProject API v3 exposes wiki metadata only or when legacy endpoints are blocked by auth mode.
 
 ### Decision logging
 

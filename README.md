@@ -183,6 +183,9 @@ python3 scripts/openproject_cli.py <subcommand> [options]
 | `create-work-package` | Create a new work package | `--project`, `--subject`, `--type`, `--description` |
 | `update-work-package-status` | Transition a work package status | `--id`, `--status` |
 | `add-comment` | Add note/comment to work package | `--id`, `--comment` |
+| `list-wiki-pages` | List wiki pages in a project | `--project` |
+| `read-wiki-page` | Read wiki by id or project/title | `--id` or `--project`, `--title`, optional `--output` |
+| `write-wiki-page` | Create/update wiki page content | `--project`, `--title`, `--content` or `--content-file`, optional `--comment` |
 | `weekly-summary` | Generate compact markdown summary | `--project`, `--output` |
 | `log-decision` | Write decision log markdown file | `--project`, `--title`, `--decision`, optional context fields |
 
@@ -204,6 +207,15 @@ python3 scripts/openproject_cli.py create-work-package \
 python3 scripts/openproject_cli.py update-work-package-status --id 123 --status "In progress"
 
 python3 scripts/openproject_cli.py add-comment --id 123 --comment "Reviewed scope with platform team."
+
+python3 scripts/openproject_cli.py list-wiki-pages --project know-malawi
+python3 scripts/openproject_cli.py read-wiki-page --project know-malawi --title "Home"
+python3 scripts/openproject_cli.py read-wiki-page --id 10 --output ./project-knowledge/status/wiki-home.md
+python3 scripts/openproject_cli.py write-wiki-page \
+  --project know-malawi \
+  --title "Home" \
+  --content-file ./templates/weekly-status-template.md \
+  --comment "Update from CLI"
 
 python3 scripts/openproject_cli.py weekly-summary --project know-malawi
 python3 scripts/openproject_cli.py weekly-summary --project know-malawi --output ./project-knowledge/status/custom-weekly.md
@@ -230,6 +242,12 @@ python3 scripts/openproject_cli.py log-decision \
 1. Create work packages for new actionable items.
 2. Move status using `update-work-package-status` as work progresses.
 3. Keep rationale and decisions in `project-knowledge/decisions/`.
+
+### Wiki maintenance
+
+1. Discover wiki pages with `list-wiki-pages`.
+2. Read canonical pages with `read-wiki-page`.
+3. Update project wiki docs with `write-wiki-page`.
 
 ### Weekly reporting
 
@@ -296,6 +314,13 @@ Use a non-production/test project for write operations during validation.
 - Comment endpoints differ across OpenProject versions/configuration.
 - CLI uses best-effort fallbacks, but some setups still restrict API comment writes.
 
+### Wiki read/write fails
+
+- API v3 commonly exposes wiki metadata only (`/api/v3/wiki_pages/{id}`).
+- Full wiki text and wiki writes rely on legacy JSON endpoints (`/projects/<id-or-identifier>/wiki/...`).
+- If legacy endpoint calls return `401`/`403`, switch to `OPENPROJECT_AUTH_MODE=basic` and verify account permissions.
+- If legacy endpoint calls return `404`, wiki module or endpoint compatibility may be unavailable on this instance.
+
 ### Command works in terminal but fails in tool runtime
 
 - Verify correct interpreter/environment (`python3` vs virtualenv interpreter).
@@ -309,6 +334,9 @@ Known variability points:
 - Comment creation endpoint behavior (`addComment`, patch comment, activities endpoint)
 - Workflow-restricted status transitions
 - Project-specific availability of types/statuses/custom fields
+- Wiki API support:
+- API v3 exposes `GET /api/v3/wiki_pages/{id}` metadata, but page text/write operations may require legacy endpoints.
+- Legacy wiki endpoints are instance-policy dependent and can require username/password auth mode.
 
 Treat this repository as conservative baseline logic; tune for your instance policies.
 

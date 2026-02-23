@@ -11,7 +11,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 try:
     import requests
@@ -49,6 +49,42 @@ def to_api_path(url_or_path: str) -> str:
         value = f"/{value}"
 
     return value
+
+
+def to_legacy_path(path: str) -> str:
+    """Normalize a non-v3 path."""
+    value = (path or "").strip()
+    if not value.startswith("/"):
+        value = f"/{value}"
+    return value
+
+
+def encode_wiki_title(title: str) -> str:
+    """Encode wiki title for URL path usage."""
+    value = title.strip()
+    if not value:
+        raise OpenProjectError("Wiki title is required.")
+    return quote(value, safe="")
+
+
+def extract_legacy_wiki_page(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a normalized wiki page object from legacy JSON payloads."""
+    wiki_page = payload.get("wiki_page")
+    if isinstance(wiki_page, dict):
+        return wiki_page
+    return payload
+
+
+def extract_wiki_text(page: Dict[str, Any]) -> str:
+    """Extract wiki text from known payload shapes."""
+    text_value = page.get("text")
+    if isinstance(text_value, str):
+        return text_value
+    if isinstance(text_value, dict):
+        raw = text_value.get("raw")
+        if isinstance(raw, str):
+            return raw
+    return ""
 
 
 class OpenProjectError(Exception):
@@ -150,6 +186,54 @@ class OpenProjectClient:
             status_code=response.status_code,
         )
 
+    def _legacy_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        payload: Optional[Dict[str, Any]] = None,
+        expected_statuses: Tuple[int, ...] = (200,),
+    ) -> Dict[str, Any]:
+        """Call legacy (non-v3) JSON endpoints used for wiki read/write compatibility."""
+        normalized_path = to_legacy_path(path)
+        url = f"{self.base_url}{normalized_path}"
+        headers = {"Accept": "application/json"}
+        if payload is not None:
+            headers["Content-Type"] = "application/json"
+
+        try:
+            response = self.session.request(
+                method=method,
+                url=url,
+                json=payload,
+                headers=headers,
+                timeout=REQUEST_TIMEOUT_SECONDS,
+            )
+        except requests.RequestException as exc:
+            raise OpenProjectError(f"Network error while calling legacy endpoint: {exc}") from exc
+
+        if response.status_code in expected_statuses:
+            if not response.content:
+                return {}
+            try:
+                return response.json()
+            except ValueError:
+                return {}
+
+        detail = extract_error_message(response)
+        if response.status_code in (401, 403):
+            raise OpenProjectError(
+                "Legacy wiki endpoint rejected authentication. "
+                "Use OPENPROJECT_AUTH_MODE=basic with OPENPROJECT_USERNAME/OPENPROJECT_PASSWORD, "
+                "or verify legacy wiki API access for your token."
+            )
+
+        raise OpenProjectError(
+            f"OpenProject legacy API error {response.status_code} for {method.upper()} "
+            f"{normalized_path}: {detail}",
+            status_code=response.status_code,
+        )
+
     def _collect_collection(
         self,
         path: str,
@@ -226,6 +310,78 @@ class OpenProjectClient:
             "Could not resolve project. Provide a valid project ID or identifier, "
             "or set OPENPROJECT_DEFAULT_PROJECT."
         )
+
+    def resolve_project_identifier(self, project_ref: str) -> str:
+        """Resolve a project reference and return a stable project identifier."""
+        project = self.resolve_project(project_ref)
+        identifier = str(project.get("identifier", "")).strip()
+        if identifier:
+            return identifier
+        project_id = project.get("id")
+        if project_id is not None:
+            return str(project_id)
+        raise OpenProjectError("Resolved project does not include identifier or id.")
+
+    def get_wiki_page_by_id(self, page_id: int) -> Dict[str, Any]:
+        """
+        Read wiki page metadata from API v3.
+
+        Note: on many OpenProject versions this endpoint is a stub and does not include full text.
+        """
+        return self._request("GET", f"/wiki_pages/{page_id}", expected_statuses=(200,))
+
+    def list_wiki_pages(self, project_ref: str) -> Tuple[str, List[Dict[str, Any]]]:
+        """List wiki pages for a project using the legacy JSON endpoint."""
+        project_identifier = self.resolve_project_identifier(project_ref)
+        path = f"/projects/{quote(project_identifier, safe='')}/wiki/index.json"
+        payload = self._legacy_request("GET", path, expected_statuses=(200,))
+
+        pages = payload.get("wiki_pages")
+        if not isinstance(pages, list):
+            pages = []
+
+        normalized = [item for item in pages if isinstance(item, dict)]
+        return project_identifier, normalized
+
+    def get_wiki_page(self, project_ref: str, title: str) -> Tuple[str, Dict[str, Any]]:
+        """Read wiki page content by project + title from the legacy JSON endpoint."""
+        project_identifier = self.resolve_project_identifier(project_ref)
+        encoded_title = encode_wiki_title(title)
+        path = f"/projects/{quote(project_identifier, safe='')}/wiki/{encoded_title}.json"
+        payload = self._legacy_request("GET", path, expected_statuses=(200,))
+        return project_identifier, extract_legacy_wiki_page(payload)
+
+    def write_wiki_page(
+        self,
+        project_ref: str,
+        title: str,
+        text: str,
+        comment: Optional[str] = None,
+    ) -> Tuple[str, Dict[str, Any]]:
+        """Create or update a wiki page by project + title using the legacy JSON endpoint."""
+        project_identifier = self.resolve_project_identifier(project_ref)
+        encoded_title = encode_wiki_title(title)
+        path = f"/projects/{quote(project_identifier, safe='')}/wiki/{encoded_title}.json"
+
+        payload: Dict[str, Any] = {
+            "wiki_page": {
+                "text": text,
+            }
+        }
+        if comment:
+            payload["wiki_page"]["comments"] = comment
+
+        result = self._legacy_request(
+            "PUT",
+            path,
+            payload=payload,
+            expected_statuses=(200, 201, 204),
+        )
+        if not result:
+            _, page = self.get_wiki_page(project_identifier, title)
+            return project_identifier, page
+
+        return project_identifier, extract_legacy_wiki_page(result)
 
     def list_work_packages(
         self,
@@ -661,6 +817,22 @@ def print_work_packages(work_packages: List[Dict[str, Any]]) -> None:
         print(f"{wp_id:<5}   {subject:<35}  {status:<13}  {assignee:<14}  {updated}")
 
 
+def print_wiki_pages(project_identifier: str, pages: List[Dict[str, Any]]) -> None:
+    """Print wiki pages in a compact table."""
+    print(f"Project wiki: {project_identifier}")
+    if not pages:
+        print("No wiki pages found.")
+        return
+
+    print("Title                              Version   Updated")
+    print("---------------------------------  --------  ----------")
+    for page in pages:
+        title = truncate(str(page.get("title", "(untitled)")), 33)
+        version = str(page.get("version", "-"))
+        updated = format_date(str(page.get("updated_on") or page.get("updatedAt") or ""))
+        print(f"{title:<33}  {version:<8}  {updated}")
+
+
 def status_bucket(status_name: str) -> str:
     """Map a status name into high-level weekly summary buckets."""
     label = normalize(status_name)
@@ -859,6 +1031,105 @@ def command_add_comment(args: argparse.Namespace) -> None:
     maybe_print_json(updated, args.debug_json)
 
 
+def command_list_wiki_pages(args: argparse.Namespace) -> None:
+    project_ref = require_project(args.project)
+    client = build_client_from_env()
+    project_identifier, pages = client.list_wiki_pages(project_ref)
+
+    print_wiki_pages(project_identifier, pages)
+    maybe_print_json({"project": project_identifier, "wiki_pages": pages}, args.debug_json)
+
+
+def command_read_wiki_page(args: argparse.Namespace) -> None:
+    client = build_client_from_env()
+
+    if args.id is not None and (args.project or args.title):
+        raise OpenProjectError("Use either --id OR (--project and --title), not both.")
+
+    if args.id is None and not args.title:
+        raise OpenProjectError("Provide --id or --title.")
+
+    page: Dict[str, Any]
+    project_identifier = ""
+    title = ""
+
+    if args.id is not None:
+        page = client.get_wiki_page_by_id(args.id)
+        title = str(page.get("title") or f"wiki-page-{args.id}")
+
+        project_identifier = str(
+            nested_get(page, ["_embedded", "project", "identifier"], "")
+            or nested_get(page, ["_embedded", "project", "id"], "")
+            or nested_get(page, ["_links", "project", "title"], "")
+        )
+
+        text = extract_wiki_text(page)
+        if not text and project_identifier and title:
+            try:
+                project_identifier, legacy_page = client.get_wiki_page(project_identifier, title)
+                page = legacy_page
+            except OpenProjectError:
+                pass
+    else:
+        project_ref = require_project(args.project)
+        project_identifier, page = client.get_wiki_page(project_ref, args.title)
+        title = str(page.get("title") or args.title)
+
+    text = extract_wiki_text(page)
+    version = page.get("version", "-")
+
+    print(f"Wiki page: {title}")
+    if project_identifier:
+        print(f"Project: {project_identifier}")
+    print(f"Version: {version}")
+
+    if text:
+        print("")
+        print(text)
+    else:
+        print("")
+        print(
+            "No wiki text returned. This server may expose only wiki metadata via API v3 "
+            "or block legacy wiki JSON endpoints for the current auth mode."
+        )
+
+    if args.output:
+        output_path = Path(args.output)
+        output_content = text if text else f"# {title}\n\n(No wiki text returned by API.)\n"
+        written_path = write_text_file(output_path, output_content)
+        print(f"\nSaved wiki content to {written_path}")
+
+    maybe_print_json(page, args.debug_json)
+
+
+def command_write_wiki_page(args: argparse.Namespace) -> None:
+    project_ref = require_project(args.project)
+    client = build_client_from_env()
+
+    if bool(args.content) == bool(args.content_file):
+        raise OpenProjectError("Provide exactly one of --content or --content-file.")
+
+    if args.content_file:
+        content_path = Path(args.content_file)
+        if not content_path.exists():
+            raise OpenProjectError(f"Content file not found: {content_path}")
+        content = content_path.read_text(encoding="utf-8")
+    else:
+        content = args.content
+
+    project_identifier, page = client.write_wiki_page(
+        project_ref=project_ref,
+        title=args.title,
+        text=content,
+        comment=args.comment,
+    )
+
+    title = str(page.get("title") or args.title)
+    version = page.get("version", "-")
+    print(f"Wrote wiki page '{title}' in project '{project_identifier}' (version: {version}).")
+    maybe_print_json(page, args.debug_json)
+
+
 def command_weekly_summary(args: argparse.Namespace) -> None:
     project_ref = require_project(args.project)
     client = build_client_from_env()
@@ -989,6 +1260,65 @@ def build_parser() -> argparse.ArgumentParser:
     parser_comment.add_argument("--id", type=int, required=True, help="Work package ID.")
     parser_comment.add_argument("--comment", required=True, help="Comment text.")
     parser_comment.set_defaults(func=command_add_comment)
+
+    parser_list_wiki = subparsers.add_parser(
+        "list-wiki-pages",
+        help="List wiki pages for a project.",
+        description="List wiki pages using OpenProject legacy JSON endpoint compatibility.",
+    )
+    parser_list_wiki.add_argument(
+        "--project",
+        help="Project ID or identifier. Optional when OPENPROJECT_DEFAULT_PROJECT is set.",
+    )
+    parser_list_wiki.set_defaults(func=command_list_wiki_pages)
+
+    parser_read_wiki = subparsers.add_parser(
+        "read-wiki-page",
+        help="Read a wiki page by id or project/title.",
+        description="Read wiki metadata from API v3 and text content via legacy wiki JSON endpoint when available.",
+    )
+    parser_read_wiki.add_argument(
+        "--id",
+        type=int,
+        help="Wiki page ID from API v3.",
+    )
+    parser_read_wiki.add_argument(
+        "--project",
+        help="Project ID or identifier (used with --title). Optional when OPENPROJECT_DEFAULT_PROJECT is set.",
+    )
+    parser_read_wiki.add_argument(
+        "--title",
+        help="Wiki page title (used with --project or default project).",
+    )
+    parser_read_wiki.add_argument(
+        "--output",
+        help="Optional output file path for page text.",
+    )
+    parser_read_wiki.set_defaults(func=command_read_wiki_page)
+
+    parser_write_wiki = subparsers.add_parser(
+        "write-wiki-page",
+        help="Create or update a wiki page.",
+        description="Write wiki page content through OpenProject legacy wiki JSON endpoint compatibility.",
+    )
+    parser_write_wiki.add_argument(
+        "--project",
+        help="Project ID or identifier. Optional when OPENPROJECT_DEFAULT_PROJECT is set.",
+    )
+    parser_write_wiki.add_argument("--title", required=True, help="Wiki page title.")
+    parser_write_wiki.add_argument(
+        "--content",
+        help="Inline wiki content.",
+    )
+    parser_write_wiki.add_argument(
+        "--content-file",
+        help="Path to file containing wiki content.",
+    )
+    parser_write_wiki.add_argument(
+        "--comment",
+        help="Optional update comment/changelog note.",
+    )
+    parser_write_wiki.set_defaults(func=command_write_wiki_page)
 
     parser_weekly = subparsers.add_parser(
         "weekly-summary",
