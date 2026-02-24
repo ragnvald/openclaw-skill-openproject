@@ -2,6 +2,7 @@
 
 `openclaw-skill-openproject` is an alpha OpenClaw skill that combines:
 - Conservative OpenProject project management operations
+- Work package metadata and relation management operations
 - Lightweight knowledge handling in local Markdown files
 
 The project is intentionally narrow and safety-first: OpenProject remains the source of truth for execution status, while weekly summaries and decision logs are generated as auditable local artifacts.
@@ -179,9 +180,17 @@ python3 scripts/openproject_cli.py <subcommand> [options]
 |---|---|---|
 | `list-projects` | List visible projects | none |
 | `list-work-packages` | List project work packages with optional filters | `--project`, `--status`, `--assignee`, `--limit` |
+| `get-work-package` | Read one work package in detail | `--id` |
 | `create-work-package` | Create a new work package | `--project`, `--subject`, `--type`, `--description` |
 | `update-work-package-status` | Transition a work package status | `--id`, `--status` |
+| `update-work-package` | Update multiple work package fields | `--id` plus any of `--subject`, `--description`, `--status`, `--assignee`, `--priority`, `--type`, `--start-date`, `--due-date` |
 | `add-comment` | Add note/comment to work package | `--id`, `--comment` |
+| `list-statuses` | List available statuses | none |
+| `list-types` | List available types | optional `--project` |
+| `list-priorities` | List available priorities | none |
+| `list-users` | List visible users | optional `--query`, `--limit` |
+| `list-relations` | List relations for one work package | `--id`, optional `--limit` |
+| `create-relation` | Create a relation between work packages | `--from-id`, `--to-id`, `--type`, optional `--description`, `--lag` |
 | `weekly-summary` | Generate compact markdown summary | `--project`, `--output` |
 | `log-decision` | Write decision log markdown file | `--project`, `--title`, `--decision`, optional context fields |
 
@@ -195,6 +204,7 @@ python3 scripts/openproject_cli.py list-projects
 python3 scripts/openproject_cli.py list-work-packages --project know-malawi --limit 50
 python3 scripts/openproject_cli.py list-work-packages --project know-malawi --status "In progress"
 python3 scripts/openproject_cli.py list-work-packages --project know-malawi --assignee "alice"
+python3 scripts/openproject_cli.py get-work-package --id 123
 
 python3 scripts/openproject_cli.py create-work-package \
   --project know-malawi \
@@ -203,8 +213,19 @@ python3 scripts/openproject_cli.py create-work-package \
   --description "Capture technical and process checks for alpha rollout."
 
 python3 scripts/openproject_cli.py update-work-package-status --id 123 --status "In progress"
+python3 scripts/openproject_cli.py update-work-package \
+  --id 123 \
+  --priority High \
+  --assignee alice \
+  --due-date 2026-03-05
 
 python3 scripts/openproject_cli.py add-comment --id 123 --comment "Reviewed scope with platform team."
+python3 scripts/openproject_cli.py list-statuses
+python3 scripts/openproject_cli.py list-types --project know-malawi
+python3 scripts/openproject_cli.py list-priorities
+python3 scripts/openproject_cli.py list-users --query "alice"
+python3 scripts/openproject_cli.py list-relations --id 123
+python3 scripts/openproject_cli.py create-relation --from-id 123 --to-id 140 --type blocks --lag 1
 
 python3 scripts/openproject_cli.py weekly-summary --project know-malawi
 python3 scripts/openproject_cli.py weekly-summary --project know-malawi --output ./project-knowledge/status/custom-weekly.md
@@ -228,9 +249,11 @@ python3 scripts/openproject_cli.py log-decision \
 
 ### Planning and execution
 
-1. Create work packages for new actionable items.
-2. Move status using `update-work-package-status` as work progresses.
-3. Keep rationale and decisions in `project-knowledge/decisions/`.
+1. Inspect available statuses/types/priorities before changes (`list-statuses`, `list-types`, `list-priorities`).
+2. Create work packages for new actionable items.
+3. Move status or patch multiple fields using `update-work-package-status` / `update-work-package`.
+4. Use relations to model dependencies (`list-relations`, `create-relation`).
+5. Keep rationale and decisions in `project-knowledge/decisions/`.
 
 ### Weekly reporting
 
@@ -291,6 +314,12 @@ Use a non-production/test project for write operations during validation.
 
 - Target status may not be allowed for current role/workflow/state.
 - Try a valid intermediate transition supported by your OpenProject workflow.
+
+### `422` on `update-work-package`
+
+- Verify field combinations are valid for your workflow/schema.
+- Confirm `--start-date` and `--due-date` use `YYYY-MM-DD`.
+- Resolve users/types/priorities first with `list-users`, `list-types`, and `list-priorities`.
 
 ### Comment command fails
 

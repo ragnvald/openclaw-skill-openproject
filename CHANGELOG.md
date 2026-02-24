@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.1.4-alpha
+
+- Added non-destructive API coverage for status/type/priority/user metadata lookups
+- Added work package detail read and multi-field update command support
+- Added work package relation list/create command support
+- Updated `SKILL.md` and `README.md` to include expanded API-backed workflows
+
 ## v0.1.3-alpha
 
 - Reduced skill scope to supported OpenProject work-package and markdown knowledge workflows

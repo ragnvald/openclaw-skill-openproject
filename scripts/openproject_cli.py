@@ -30,6 +30,19 @@ DEFAULT_WEEKLY_STATUS_DIR = Path("project-knowledge/status")
 DEFAULT_WEEKLY_FETCH_LIMIT = 200
 REQUEST_TIMEOUT_SECONDS = 30
 MAX_PAGE_SIZE = 200
+RELATION_TYPES = {
+    "relates",
+    "duplicates",
+    "duplicated",
+    "blocks",
+    "blocked",
+    "precedes",
+    "follows",
+    "includes",
+    "partof",
+    "requires",
+    "required",
+}
 
 
 def to_api_path(url_or_path: str) -> str:
@@ -282,6 +295,20 @@ class OpenProjectClient:
         """Return a list of projects visible to the current user."""
         return self._collect_collection("/projects", limit=limit)
 
+    def get_statuses(self) -> List[Dict[str, Any]]:
+        """Return available work package statuses."""
+        data = self._request("GET", "/statuses", expected_statuses=(200,))
+        return extract_embedded_elements(data)
+
+    def get_priorities(self) -> List[Dict[str, Any]]:
+        """Return available work package priorities."""
+        data = self._request("GET", "/priorities", expected_statuses=(200,))
+        return extract_embedded_elements(data)
+
+    def get_users(self, limit: int = 200) -> List[Dict[str, Any]]:
+        """Return users visible to the current principal."""
+        return self._collect_collection("/users", limit=limit)
+
     def resolve_project(self, project_ref: str) -> Dict[str, Any]:
         """Resolve a project by id, identifier, or exact name (case-insensitive for text)."""
         target = project_ref.strip()
@@ -321,6 +348,27 @@ class OpenProjectClient:
         if project_id is not None:
             return str(project_id)
         raise OpenProjectError("Resolved project does not include identifier or id.")
+
+    def get_types(self, project_id: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Return available work package types, preferring project scope when possible."""
+        endpoints: List[str] = []
+        if project_id is not None:
+            endpoints.append(f"/projects/{project_id}/types")
+        endpoints.append("/types")
+
+        for endpoint in endpoints:
+            try:
+                data = self._request("GET", endpoint, expected_statuses=(200,))
+            except OpenProjectError as exc:
+                if endpoint.startswith("/projects/") and exc.status_code in (404, 405):
+                    continue
+                raise
+
+            elements = extract_embedded_elements(data)
+            if elements:
+                return elements
+
+        return []
 
     def get_wiki_page_by_id(self, page_id: int) -> Dict[str, Any]:
         """
@@ -406,10 +454,13 @@ class OpenProjectClient:
                 raise
             return self._collect_collection(path, params={}, limit=limit)
 
-    def resolve_type(self, project_id: int, type_name: str) -> Tuple[str, str]:
+    def resolve_type(self, project_id: Optional[int], type_name: str) -> Tuple[str, str]:
         """Resolve a work package type by name and return (name, href)."""
         lowered_target = type_name.strip().lower()
-        endpoints = [f"/projects/{project_id}/types", "/types"]
+        endpoints: List[str] = []
+        if project_id is not None:
+            endpoints.append(f"/projects/{project_id}/types")
+        endpoints.append("/types")
         available: List[str] = []
 
         for endpoint in endpoints:
@@ -435,6 +486,85 @@ class OpenProjectClient:
         raise OpenProjectError(
             "Could not resolve type list from OpenProject. Check permissions for reading types."
         )
+
+    def resolve_priority(self, priority_name: str) -> Tuple[str, str]:
+        """Resolve priority by name and return (name, href)."""
+        lowered_target = priority_name.strip().lower()
+        priorities = self.get_priorities()
+        available: List[str] = []
+
+        for priority in priorities:
+            name = str(priority.get("name", "")).strip()
+            href = nested_get(priority, ["_links", "self", "href"], "")
+            if name:
+                available.append(name)
+            if name and name.lower() == lowered_target:
+                return name, href or f"{API_PREFIX}/priorities/{priority.get('id')}"
+
+        if available:
+            hint = ", ".join(sorted(set(available)))
+            raise OpenProjectError(
+                f"Unknown priority '{priority_name}'. Available priorities: {hint}"
+            )
+
+        raise OpenProjectError("No priorities were returned by OpenProject.")
+
+    def resolve_user(self, user_ref: str) -> Tuple[str, str]:
+        """Resolve user by id, login, or display name and return (name, href)."""
+        target = user_ref.strip()
+        if not target:
+            raise OpenProjectError("Assignee value is empty.")
+
+        if target.isdigit():
+            user_id = int(target)
+            user = self._request("GET", f"/users/{user_id}", expected_statuses=(200,))
+            name = user_display_name(user)
+            return name, f"{API_PREFIX}/users/{user_id}"
+
+        try:
+            users = self.get_users(limit=500)
+        except OpenProjectError as exc:
+            if exc.status_code == 403:
+                raise OpenProjectError(
+                    "Cannot resolve assignee by name because user listing is not permitted. "
+                    "Use numeric --assignee <user_id> or request permission to list users."
+                ) from exc
+            raise
+        lowered_target = target.lower()
+        exact_match: Optional[Dict[str, Any]] = None
+        partial_match: Optional[Dict[str, Any]] = None
+
+        for user in users:
+            keys = user_identity_keys(user)
+            lowered_keys = [key.lower() for key in keys]
+            if lowered_target in lowered_keys:
+                exact_match = user
+                break
+            if not partial_match and any(lowered_target in key for key in lowered_keys):
+                partial_match = user
+
+        selected = exact_match or partial_match
+        if selected is None:
+            available = sorted(
+                {
+                    user_display_name(user)
+                    for user in users
+                    if user_display_name(user) not in {"-", ""}
+                }
+            )
+            hint = ", ".join(available[:12]) if available else "No visible users found."
+            raise OpenProjectError(
+                f"Unknown user '{user_ref}'. Use numeric user ID, login, or exact display name. "
+                f"Known users: {hint}"
+            )
+
+        href = nested_get(selected, ["_links", "self", "href"], "")
+        user_id = selected.get("id")
+        if not href and user_id is not None:
+            href = f"{API_PREFIX}/users/{user_id}"
+        if not href:
+            raise OpenProjectError("Resolved user did not include a self href or id.")
+        return user_display_name(selected), href
 
     def create_work_package(
         self,
@@ -576,6 +706,128 @@ class OpenProjectClient:
                     f"Status update rejected by workflow for work package #{work_package_id}. {exc}"
                 ) from exc
             raise
+
+    def update_work_package(
+        self,
+        work_package_id: int,
+        *,
+        subject: Optional[str] = None,
+        description: Optional[str] = None,
+        status_name: Optional[str] = None,
+        assignee_ref: Optional[str] = None,
+        priority_name: Optional[str] = None,
+        type_name: Optional[str] = None,
+        start_date: Optional[str] = None,
+        due_date: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Update mutable work package fields in a single PATCH call."""
+        work_package = self.get_work_package(work_package_id)
+        lock_version = work_package.get("lockVersion")
+        if lock_version is None:
+            raise OpenProjectError("Work package payload did not include lockVersion.")
+
+        payload: Dict[str, Any] = {"lockVersion": lock_version}
+
+        if subject is not None:
+            payload["subject"] = subject
+        if description is not None:
+            payload["description"] = {"raw": description}
+        if start_date is not None:
+            payload["startDate"] = start_date
+        if due_date is not None:
+            payload["dueDate"] = due_date
+
+        link_updates: Dict[str, Dict[str, str]] = {}
+
+        if status_name:
+            _, status_href = self.resolve_allowed_transition_status(work_package, status_name)
+            link_updates["status"] = {"href": status_href}
+
+        if priority_name:
+            _, priority_href = self.resolve_priority(priority_name)
+            link_updates["priority"] = {"href": priority_href}
+
+        if assignee_ref:
+            _, assignee_href = self.resolve_user(assignee_ref)
+            link_updates["assignee"] = {"href": assignee_href}
+
+        if type_name:
+            project_href = str(nested_get(work_package, ["_links", "project", "href"], ""))
+            project_id = extract_numeric_id_from_href(project_href, "projects")
+            _, resolved_type_href = self.resolve_type(project_id, type_name)
+            link_updates["type"] = {"href": resolved_type_href}
+
+        if link_updates:
+            payload["_links"] = link_updates
+
+        if len(payload) <= 1:
+            raise OpenProjectError("No fields provided to update.")
+
+        update_href = nested_get(work_package, ["_links", "updateImmediately", "href"], "")
+        patch_path = to_api_path(update_href) if update_href else f"/work_packages/{work_package_id}"
+        try:
+            return self._request(
+                "PATCH",
+                patch_path,
+                payload=payload,
+                expected_statuses=(200,),
+            )
+        except OpenProjectError as exc:
+            if exc.status_code == 422:
+                raise OpenProjectError(
+                    f"Work package update rejected for #{work_package_id}. {exc}"
+                ) from exc
+            raise
+
+    def list_work_package_relations(
+        self,
+        work_package_id: int,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """List relations for a single work package."""
+        wp_relations_path = f"/work_packages/{work_package_id}/relations"
+        try:
+            return self._collect_collection(wp_relations_path, limit=limit)
+        except OpenProjectError as exc:
+            if exc.status_code not in (404, 405):
+                raise
+
+        filters = json.dumps(
+            [{"involved": {"operator": "=", "values": [str(work_package_id)]}}]
+        )
+        return self._collect_collection("/relations", params={"filters": filters}, limit=limit)
+
+    def create_relation(
+        self,
+        from_work_package_id: int,
+        to_work_package_id: int,
+        relation_type: str,
+        description: Optional[str] = None,
+        lag: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Create a relation between two work packages."""
+        relation = relation_type.strip().lower()
+        if relation not in RELATION_TYPES:
+            allowed = ", ".join(sorted(RELATION_TYPES))
+            raise OpenProjectError(
+                f"Unsupported relation type '{relation_type}'. Allowed types: {allowed}"
+            )
+
+        payload: Dict[str, Any] = {
+            "type": relation,
+            "_links": {"to": {"href": f"{API_PREFIX}/work_packages/{to_work_package_id}"}},
+        }
+        if description is not None:
+            payload["description"] = description
+        if lag is not None:
+            payload["lag"] = lag
+
+        return self._request(
+            "POST",
+            f"/work_packages/{from_work_package_id}/relations",
+            payload=payload,
+            expected_statuses=(200, 201),
+        )
 
     def add_comment(self, work_package_id: int, comment: str) -> Dict[str, Any]:
         """Add a note/comment to a work package using best-effort API compatibility."""
@@ -762,6 +1014,75 @@ def normalize(value: str) -> str:
     return value.strip().lower()
 
 
+def ensure_iso_date(value: str, arg_name: str) -> str:
+    """Validate YYYY-MM-DD input and return the normalized value."""
+    normalized_value = value.strip()
+    try:
+        datetime.strptime(normalized_value, "%Y-%m-%d")
+    except ValueError as exc:
+        raise OpenProjectError(f"{arg_name} must be in YYYY-MM-DD format.") from exc
+    return normalized_value
+
+
+def extract_numeric_id_from_href(href: str, resource: str) -> Optional[int]:
+    """Extract trailing numeric id from API href like /api/v3/<resource>/<id>."""
+    if not href:
+        return None
+    match = re.search(rf"/{re.escape(resource)}/(\d+)$", href.strip())
+    if not match:
+        return None
+    return int(match.group(1))
+
+
+def extract_formattable_text(value: Any) -> str:
+    """Extract raw text from either string or OP text object shape."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        raw = value.get("raw")
+        if isinstance(raw, str):
+            return raw
+    return ""
+
+
+def user_display_name(user: Dict[str, Any]) -> str:
+    """Get preferred display name for a user payload."""
+    name = str(user.get("name", "")).strip()
+    if name:
+        return name
+    first = str(user.get("firstName", "")).strip()
+    last = str(user.get("lastName", "")).strip()
+    full = " ".join(part for part in (first, last) if part).strip()
+    if full:
+        return full
+    login = str(user.get("login", "")).strip()
+    if login:
+        return login
+    user_id = user.get("id")
+    if user_id is not None:
+        return str(user_id)
+    return "-"
+
+
+def user_identity_keys(user: Dict[str, Any]) -> List[str]:
+    """Return user identity keys suitable for matching assignee input."""
+    keys: List[str] = []
+    name = str(user.get("name", "")).strip()
+    login = str(user.get("login", "")).strip()
+    first = str(user.get("firstName", "")).strip()
+    last = str(user.get("lastName", "")).strip()
+    full = " ".join(part for part in (first, last) if part).strip()
+    user_id = user.get("id")
+
+    for value in (name, login, first, last, full):
+        if value:
+            keys.append(value)
+    if user_id is not None:
+        keys.append(str(user_id))
+
+    return keys
+
+
 def filter_work_packages(
     work_packages: List[Dict[str, Any]],
     status_filter: Optional[str],
@@ -783,6 +1104,22 @@ def filter_work_packages(
         filtered.append(wp)
 
     return filtered
+
+
+def filter_users(users: List[Dict[str, Any]], query: Optional[str]) -> List[Dict[str, Any]]:
+    """Apply case-insensitive substring match over common user identity fields."""
+    needle = normalize(query or "")
+    if not needle:
+        return users
+
+    matched: List[Dict[str, Any]] = []
+    for user in users:
+        keys = user_identity_keys(user)
+        lowered = [key.lower() for key in keys]
+        if any(needle in key for key in lowered):
+            matched.append(user)
+
+    return matched
 
 
 def print_projects(projects: List[Dict[str, Any]]) -> None:
@@ -815,6 +1152,117 @@ def print_work_packages(work_packages: List[Dict[str, Any]]) -> None:
         assignee = truncate(link_title(wp, "assignee", "Unassigned"), 14)
         updated = format_date(str(wp.get("updatedAt", "")))
         print(f"{wp_id:<5}   {subject:<35}  {status:<13}  {assignee:<14}  {updated}")
+
+
+def print_statuses(statuses: List[Dict[str, Any]]) -> None:
+    """Print available statuses."""
+    if not statuses:
+        print("No statuses returned.")
+        return
+
+    print("ID   Name                       Closed")
+    print("---  -------------------------  ------")
+    for status in statuses:
+        status_id = str(status.get("id", "?"))
+        name = truncate(str(status.get("name", "-")), 25)
+        is_closed = str(bool(status.get("isClosed", False)))
+        print(f"{status_id:<3}  {name:<25}  {is_closed}")
+
+
+def print_types(types: List[Dict[str, Any]]) -> None:
+    """Print available work package types."""
+    if not types:
+        print("No types returned.")
+        return
+
+    print("ID   Name                       Milestone")
+    print("---  -------------------------  ---------")
+    for type_item in types:
+        type_id = str(type_item.get("id", "?"))
+        name = truncate(str(type_item.get("name", "-")), 25)
+        is_milestone = str(bool(type_item.get("isMilestone", False)))
+        print(f"{type_id:<3}  {name:<25}  {is_milestone}")
+
+
+def print_priorities(priorities: List[Dict[str, Any]]) -> None:
+    """Print available priorities."""
+    if not priorities:
+        print("No priorities returned.")
+        return
+
+    print("ID   Name                       Position")
+    print("---  -------------------------  --------")
+    for priority in priorities:
+        priority_id = str(priority.get("id", "?"))
+        name = truncate(str(priority.get("name", "-")), 25)
+        position = str(priority.get("position", "-"))
+        print(f"{priority_id:<3}  {name:<25}  {position}")
+
+
+def print_users(users: List[Dict[str, Any]]) -> None:
+    """Print visible users."""
+    if not users:
+        print("No users returned.")
+        return
+
+    print("ID   Name                              Login")
+    print("---  --------------------------------  ----------------------")
+    for user in users:
+        user_id = str(user.get("id", "?"))
+        name = truncate(user_display_name(user), 32)
+        login = truncate(str(user.get("login", "-") or "-"), 22)
+        print(f"{user_id:<3}  {name:<32}  {login}")
+
+
+def print_work_package_detail(work_package: Dict[str, Any]) -> None:
+    """Print high-value details for a single work package."""
+    wp_id = work_package.get("id", "?")
+    subject = str(work_package.get("subject", "(no subject)"))
+    status = link_title(work_package, "status", "-")
+    type_name = link_title(work_package, "type", "-")
+    priority = link_title(work_package, "priority", "-")
+    assignee = link_title(work_package, "assignee", "Unassigned")
+    author = link_title(work_package, "author", "-")
+    created = format_date(str(work_package.get("createdAt", "")))
+    updated = format_date(str(work_package.get("updatedAt", "")))
+    start_date = str(work_package.get("startDate", "-") or "-")
+    due_date = str(work_package.get("dueDate", "-") or "-")
+    lock_version = str(work_package.get("lockVersion", "-"))
+
+    print(f"Work package #{wp_id}")
+    print(f"Subject: {subject}")
+    print(f"Status: {status}")
+    print(f"Type: {type_name}")
+    print(f"Priority: {priority}")
+    print(f"Assignee: {assignee}")
+    print(f"Author: {author}")
+    print(f"Start date: {start_date}")
+    print(f"Due date: {due_date}")
+    print(f"Created: {created}")
+    print(f"Updated: {updated}")
+    print(f"Lock version: {lock_version}")
+
+    description = extract_formattable_text(work_package.get("description"))
+    if description.strip():
+        print("\nDescription:\n")
+        print(description.strip())
+
+
+def print_relations(relations: List[Dict[str, Any]]) -> None:
+    """Print relations in a compact table."""
+    if not relations:
+        print("No relations returned.")
+        return
+
+    print("ID    Type        From           To             Lag")
+    print("----  ----------  -------------  -------------  ----")
+    for relation in relations:
+        relation_id = str(relation.get("id", "?"))
+        relation_type = truncate(str(relation.get("type", "-")), 10)
+        from_wp = truncate(link_title(relation, "from", "-"), 13)
+        to_wp = truncate(link_title(relation, "to", "-"), 13)
+        lag = str(relation.get("lag", "-"))
+        print(f"{relation_id:<4}  {relation_type:<10}  {from_wp:<13}  {to_wp:<13}  {lag}")
 
 
 def print_wiki_pages(project_identifier: str, pages: List[Dict[str, Any]]) -> None:
@@ -1029,6 +1477,122 @@ def command_add_comment(args: argparse.Namespace) -> None:
     wp_id = updated.get("id", args.id)
     print(f"Added comment to work package #{wp_id}.")
     maybe_print_json(updated, args.debug_json)
+
+
+def command_get_work_package(args: argparse.Namespace) -> None:
+    client = build_client_from_env()
+    work_package = client.get_work_package(args.id)
+    print_work_package_detail(work_package)
+    maybe_print_json(work_package, args.debug_json)
+
+
+def command_update_work_package(args: argparse.Namespace) -> None:
+    if not any(
+        value is not None
+        for value in (
+            args.subject,
+            args.description,
+            args.status,
+            args.assignee,
+            args.priority,
+            args.type,
+            args.start_date,
+            args.due_date,
+        )
+    ):
+        raise OpenProjectError("Provide at least one field to update.")
+
+    start_date = ensure_iso_date(args.start_date, "--start-date") if args.start_date else None
+    due_date = ensure_iso_date(args.due_date, "--due-date") if args.due_date else None
+
+    client = build_client_from_env()
+    updated = client.update_work_package(
+        args.id,
+        subject=args.subject,
+        description=args.description,
+        status_name=args.status,
+        assignee_ref=args.assignee,
+        priority_name=args.priority,
+        type_name=args.type,
+        start_date=start_date,
+        due_date=due_date,
+    )
+
+    wp_id = updated.get("id", args.id)
+    print(f"Updated work package #{wp_id}.")
+    print_work_package_detail(updated)
+    maybe_print_json(updated, args.debug_json)
+
+
+def command_list_statuses(args: argparse.Namespace) -> None:
+    client = build_client_from_env()
+    statuses = client.get_statuses()
+    print_statuses(statuses)
+    maybe_print_json(statuses, args.debug_json)
+
+
+def command_list_types(args: argparse.Namespace) -> None:
+    client = build_client_from_env()
+
+    project_id: Optional[int] = None
+    if args.project:
+        project = client.resolve_project(args.project)
+        project_id = int(project["id"])
+        project_label = project.get("identifier") or project.get("name") or project_id
+        print(f"Project: {project_label}")
+
+    types = client.get_types(project_id=project_id)
+    print_types(types)
+    maybe_print_json(types, args.debug_json)
+
+
+def command_list_priorities(args: argparse.Namespace) -> None:
+    client = build_client_from_env()
+    priorities = client.get_priorities()
+    print_priorities(priorities)
+    maybe_print_json(priorities, args.debug_json)
+
+
+def command_list_users(args: argparse.Namespace) -> None:
+    client = build_client_from_env()
+    try:
+        users = client.get_users(limit=args.limit)
+    except OpenProjectError as exc:
+        if exc.status_code == 403:
+            raise OpenProjectError(
+                "Listing users is forbidden for this token/role. "
+                "Use an account with user-list permission or assign by numeric user ID."
+            ) from exc
+        raise
+    filtered = filter_users(users, args.query)
+    print_users(filtered)
+    maybe_print_json(filtered, args.debug_json)
+
+
+def command_list_relations(args: argparse.Namespace) -> None:
+    client = build_client_from_env()
+    relations = client.list_work_package_relations(args.id, limit=args.limit)
+    print(f"Work package #{args.id}")
+    print_relations(relations)
+    maybe_print_json(relations, args.debug_json)
+
+
+def command_create_relation(args: argparse.Namespace) -> None:
+    client = build_client_from_env()
+    relation = client.create_relation(
+        from_work_package_id=args.from_id,
+        to_work_package_id=args.to_id,
+        relation_type=args.type,
+        description=args.description,
+        lag=args.lag,
+    )
+
+    relation_id = relation.get("id", "?")
+    relation_type = relation.get("type", args.type)
+    print(
+        f"Created relation #{relation_id}: #{args.from_id} {relation_type} #{args.to_id}."
+    )
+    maybe_print_json(relation, args.debug_json)
 
 
 def command_list_wiki_pages(args: argparse.Namespace) -> None:
@@ -1261,6 +1825,125 @@ def build_parser() -> argparse.ArgumentParser:
     parser_comment.add_argument("--comment", required=True, help="Comment text.")
     parser_comment.set_defaults(func=command_add_comment)
 
+    parser_get_wp = subparsers.add_parser(
+        "get-work-package",
+        help="Get details for a single work package.",
+        description="Fetch and print high-value fields for one work package.",
+    )
+    parser_get_wp.add_argument("--id", type=int, required=True, help="Work package ID.")
+    parser_get_wp.set_defaults(func=command_get_work_package)
+
+    parser_update_wp = subparsers.add_parser(
+        "update-work-package",
+        help="Update work package fields in one command.",
+        description="Patch a work package with one or more mutable fields.",
+    )
+    parser_update_wp.add_argument("--id", type=int, required=True, help="Work package ID.")
+    parser_update_wp.add_argument("--subject", help="New subject/title.")
+    parser_update_wp.add_argument("--description", help="New description text.")
+    parser_update_wp.add_argument(
+        "--status",
+        help="New status name (transition-aware, case-insensitive).",
+    )
+    parser_update_wp.add_argument(
+        "--assignee",
+        help="Assignee user id, login, or display name.",
+    )
+    parser_update_wp.add_argument("--priority", help="Priority name.")
+    parser_update_wp.add_argument("--type", help="Work package type name.")
+    parser_update_wp.add_argument("--start-date", help="Start date (YYYY-MM-DD).")
+    parser_update_wp.add_argument("--due-date", help="Due date (YYYY-MM-DD).")
+    parser_update_wp.set_defaults(func=command_update_work_package)
+
+    parser_statuses = subparsers.add_parser(
+        "list-statuses",
+        help="List available work package statuses.",
+        description="Fetch and print status values from OpenProject.",
+    )
+    parser_statuses.set_defaults(func=command_list_statuses)
+
+    parser_types = subparsers.add_parser(
+        "list-types",
+        help="List available work package types.",
+        description="Fetch and print type values globally or project-scoped when provided.",
+    )
+    parser_types.add_argument(
+        "--project",
+        help="Optional project ID or identifier for project-scoped type resolution.",
+    )
+    parser_types.set_defaults(func=command_list_types)
+
+    parser_priorities = subparsers.add_parser(
+        "list-priorities",
+        help="List available work package priorities.",
+        description="Fetch and print priority values from OpenProject.",
+    )
+    parser_priorities.set_defaults(func=command_list_priorities)
+
+    parser_users = subparsers.add_parser(
+        "list-users",
+        help="List visible users.",
+        description="Fetch users and optionally filter by query string.",
+    )
+    parser_users.add_argument(
+        "--query",
+        help="Optional case-insensitive substring filter (name/login/id).",
+    )
+    parser_users.add_argument(
+        "--limit",
+        type=int,
+        default=200,
+        help="Maximum number of users to fetch (default: 200).",
+    )
+    parser_users.set_defaults(func=command_list_users)
+
+    parser_relations = subparsers.add_parser(
+        "list-relations",
+        help="List relations for a work package.",
+        description="Fetch and print relation rows for a single work package.",
+    )
+    parser_relations.add_argument("--id", type=int, required=True, help="Work package ID.")
+    parser_relations.add_argument(
+        "--limit",
+        type=int,
+        default=100,
+        help="Maximum number of relations to fetch (default: 100).",
+    )
+    parser_relations.set_defaults(func=command_list_relations)
+
+    parser_create_relation = subparsers.add_parser(
+        "create-relation",
+        help="Create a relation between work packages.",
+        description="Create a relation from one work package to another.",
+    )
+    parser_create_relation.add_argument(
+        "--from-id",
+        type=int,
+        required=True,
+        help="Source work package ID.",
+    )
+    parser_create_relation.add_argument(
+        "--to-id",
+        type=int,
+        required=True,
+        help="Target work package ID.",
+    )
+    parser_create_relation.add_argument(
+        "--type",
+        required=True,
+        help="Relation type (for example: relates, blocks, follows).",
+    )
+    parser_create_relation.add_argument(
+        "--description",
+        help="Optional relation description.",
+    )
+    parser_create_relation.add_argument(
+        "--lag",
+        type=int,
+        help="Optional lag value (integer, typically in days).",
+    )
+    parser_create_relation.set_defaults(func=command_create_relation)
+
     parser_list_wiki = subparsers.add_parser(
         "list-wiki-pages",
         help="List wiki pages for a project.",
@@ -1363,6 +2046,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     try:
         if hasattr(args, "limit") and args.limit is not None and args.limit <= 0:
             raise OpenProjectError("--limit must be greater than 0.")
+        if hasattr(args, "lag") and args.lag is not None and args.lag < 0:
+            raise OpenProjectError("--lag must be zero or greater.")
         args.func(args)
         return 0
     except OpenProjectError as exc:

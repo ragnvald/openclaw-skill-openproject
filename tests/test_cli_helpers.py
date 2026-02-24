@@ -59,6 +59,30 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(cli.to_api_path("https://example.org/api/v3/projects/8"), "/projects/8")
         self.assertEqual(cli.to_api_path("work_packages/1"), "/work_packages/1")
 
+    def test_ensure_iso_date(self) -> None:
+        self.assertEqual(cli.ensure_iso_date("2026-02-24", "--start-date"), "2026-02-24")
+        with self.assertRaises(cli.OpenProjectError):
+            cli.ensure_iso_date("24.02.2026", "--start-date")
+
+    def test_extract_numeric_id_from_href(self) -> None:
+        self.assertEqual(
+            cli.extract_numeric_id_from_href("/api/v3/projects/42", "projects"),
+            42,
+        )
+        self.assertIsNone(
+            cli.extract_numeric_id_from_href("/api/v3/projects/demo-project", "projects")
+        )
+
+    def test_user_helpers(self) -> None:
+        users = [
+            {"id": 1, "name": "Alice Admin", "login": "alice"},
+            {"id": 2, "firstName": "Bob", "lastName": "Builder", "login": "bob"},
+        ]
+        self.assertEqual(cli.user_display_name(users[0]), "Alice Admin")
+        self.assertEqual(cli.user_display_name(users[1]), "Bob Builder")
+        self.assertEqual(len(cli.filter_users(users, "bob")), 1)
+        self.assertEqual(cli.filter_users(users, "3"), [])
+
     def test_wiki_helpers(self) -> None:
         self.assertEqual(cli.encode_wiki_title("Project Home"), "Project%20Home")
 
