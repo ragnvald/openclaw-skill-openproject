@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.1.3-alpha
+
+- Reduced skill scope to supported OpenProject work-package and markdown knowledge workflows
+- Removed wiki read/write guidance from `SKILL.md` and `README.md`
+- Clarified that wiki operations are out of scope due to inconsistent API behavior
+
 ## v0.1.2-alpha
 
 - Documentation refresh for OpenProject wiki usage

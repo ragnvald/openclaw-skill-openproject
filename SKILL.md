@@ -1,6 +1,6 @@
 ---
 name: openproject-pm-knowledge
-description: Manage OpenProject work packages, wiki pages, and lightweight project knowledge artifacts (weekly summaries and decision logs). Use when work requires reading project/work package status, creating or updating work packages, adding comments, reading or updating OpenProject wiki content, generating weekly markdown status updates, or logging project decisions.
+description: Manage OpenProject work packages and lightweight project knowledge artifacts (weekly summaries and decision logs). Use when work requires reading project/work package status, creating or updating work packages, adding comments, generating weekly markdown status updates, or logging project decisions.
 ---
 
 # OpenProject PM + Knowledge Skill
@@ -14,6 +14,7 @@ Purpose: use OpenProject as project source of truth and keep lightweight knowled
 - Never expose API tokens, credentials, or secret values.
 - Do not perform delete operations in v1.
 - Fail closed with clear errors when permissions, transitions, or endpoints are not available.
+- Treat OpenProject wiki API operations as unsupported in this skill.
 
 ## Environment Variables
 
@@ -21,8 +22,6 @@ Purpose: use OpenProject as project source of truth and keep lightweight knowled
 - `OPENPROJECT_API_TOKEN` (required for default auth): API token used with username `apikey`.
 - `OPENPROJECT_DEFAULT_PROJECT` (optional): default project id/identifier used when `--project` is omitted.
 - `OPENPROJECT_DECISION_LOG_DIR` (optional): directory for decision markdown files. Default: `project-knowledge/decisions`.
-- `OPENPROJECT_AUTH_MODE` (optional): `token` (default) or `basic`.
-- `OPENPROJECT_USERNAME` and `OPENPROJECT_PASSWORD` (optional): used when `OPENPROJECT_AUTH_MODE=basic`; can be required for some legacy wiki endpoints.
 
 ## Supported Operations
 
@@ -42,18 +41,13 @@ Use `python scripts/openproject_cli.py <command> [args]`.
 - `add-comment --id <wp_id> --comment "..."`
   - Best-effort comment creation using OpenProject API v3.
   - Returns a clear message when endpoint behavior differs by version/config.
-- `list-wiki-pages --project <id|identifier>`
-  - List wiki pages for a project (legacy JSON endpoint compatibility).
-- `read-wiki-page [--id <wiki_id> | --project <id|identifier> --title "..."] [--output path.md]`
-  - Read wiki page metadata via API v3 and page text via legacy JSON endpoint when available.
-- `write-wiki-page --project <id|identifier> --title "..." (--content "..." | --content-file path.md) [--comment "..."]`
-  - Create or update wiki page content via legacy JSON endpoint compatibility.
-  - If legacy endpoint auth fails in token mode, switch to `OPENPROJECT_AUTH_MODE=basic` and use `OPENPROJECT_USERNAME` / `OPENPROJECT_PASSWORD`.
 - `weekly-summary --project <id|identifier> [--output path.md]`
   - Build compact markdown grouped by completion/in-progress/blockers/next focus.
   - Writes output to provided path or default `project-knowledge/status/YYYY-MM-DD-weekly-status.md`.
 - `log-decision --project <id|identifier> --title "..." --decision "..." [--context ...] [--impact ...] [--followup ...]`
   - Create a decision markdown entry in `project-knowledge/decisions`.
+
+Wiki commands may exist in the CLI for legacy compatibility, but they are out of scope for this skill and should not be used in normal workflows.
 
 ## Agent Behavior
 
@@ -85,13 +79,10 @@ Use `python scripts/openproject_cli.py <command> [args]`.
   - Next focus
 - Save summary in `project-knowledge/status/` with date-based filename unless output path is provided.
 
-### Wiki read/write
+### Wiki requests
 
-- Use `list-wiki-pages` to discover wiki page titles within a project.
-- Use `read-wiki-page` for metadata-first reads (`--id`) and full text reads (`--project --title`).
-- Use `write-wiki-page` to create/update wiki pages with explicit text payload.
-- Prefer `--content-file` for larger wiki updates to keep command history clean and auditable.
-- Report capability limits clearly when OpenProject API v3 exposes wiki metadata only or when legacy endpoints are blocked by auth mode.
+- Explain that wiki read/write is not supported by this skill due to inconsistent API behavior.
+- When documentation updates are requested, create or update local markdown artifacts instead (for example in `project-knowledge/` or `templates/`) and note that wiki sync is manual.
 
 ### Decision logging
 
