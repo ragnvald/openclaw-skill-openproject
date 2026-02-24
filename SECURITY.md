@@ -2,7 +2,8 @@
 
 ## Reporting a Vulnerability
 
-Report vulnerabilities privately to: `security-contact@example.com`.
+Report vulnerabilities privately to: `security@mindland.com`.
+You can also report privately via GitHub Security Advisories (Private Vulnerability Reporting), if enabled for this repository.
 
 Do not open public issues for suspected vulnerabilities.
 
